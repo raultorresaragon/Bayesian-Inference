@@ -1,0 +1,445 @@
+---
+title: "Homework 3"
+author: "Raul Torres Aragon"
+date: "4/19/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+library(tidyverse)
+d <- read.csv("/Users/raul_torres_aragon/Desktop/Stat Courses/Bayesian/hw/gibbs.csv")
+set.seed(564)
+```
+
+# Question 1:  
+
+For this exercise we will consider the dataset hibbs.dat (attached)  Download hibbs.dat (attached),  Download ,as appeared in Gelman et al. [2020].  
+
+The data set contains 16 observations of national presidential elections of the United States, relating the share of vote obtained by the incumbent party (vote), and the average growth in the preceding years (growth).  
+
+### (1a)  
+Consider a Bayesian normal linear regression model of vote against (centered) growth (that is, use growth - mean(growth) ). What is the meaning of the intercept (alpha)? What is the meaning of the slope (beta)? What is the meaning of the standard deviation (sigma)? Using this knowledge, choose some weakly informative priors for all parameters, and justify your choice.  
+
+<span style='color: blue'>
+*The intercept captures the expected vote share for the incumbent party under average growth.*  
+*Beta captures the expected change in vote share for the incumbent party for a one unit change of growth from the mean growth.*  
+*Sigma is a measure of the spread of vote share for the incumbent party*  
+*I hence chose as priors* $\alpha \sim N(50,4)$ *because I think vote for the incumbent can swing in any direction when there is average growth*  
+*When there is higher-than-average growth though, I think the incumbent would get a boost. Hence* $\beta \sim N(3,1)$*.*  
+*The variance of vote share for the incumbent, overall, I think is somewhere between 5 and 10, thus I chose $\sigma \sim Unif(0,20)$ to be conservative.*  
+</span>
+
+### (1b)  
+Compute the posterior distribution of all parameters, and report the posterior mean and 95% credible intervals. Is growth related to expected vote?  
+```{r}
+growth_bar <- mean(d$growth)
+lmod <- quap(
+          alist(
+            vote ~ dnorm(mu, sigma),
+            mu <- a + b*(growth - growth_bar),
+            a ~ dnorm(50, 4),
+            b ~ dnorm(3,1),
+            sigma ~ dunif(0,20)
+          ), data = d
+        )
+
+precis(lmod, digits = 1)
+```  
+
+```{r, include = FALSE}
+### library(rjags)
+### model_code <- "
+###   model{
+###     for(i in 1:n){
+###       
+###       # likelihood
+###       y[i] ~ dnorm(mu[i], tau) # tau precision
+###       
+###       # linear model for the conditional mean
+###       mu[i] <- alpha + beta*(x[i] - xbar)
+###     }
+###     
+###     # prior 
+###     alpha ~ dnorm(50, 1/16)
+###     beta ~ dnorm(3, 1)
+###     sigma ~ dunif(0, 20)
+###     tau <- pow(sigma, -2)
+###   }
+### "
+### nsim <- 1e4
+### n    <- nrow(d)
+### xbar <- mean(d$growth)
+### 
+### mod1 <- jags.model(file = textConnection(model_code), 
+###                    data = list(y = d$growth,
+###                                x = x,
+###                                xbar = xbar,
+###                                n = n))
+### 
+### mod1_samples <- coda.samples(model = m1, variable.names = c("alpha", "beta", "sigma"), n.iter = nsim)
+### mod1_df <- as.data.frame(mod1_samples[[1]])
+### precis(mod1_samples_df, prob = 0.95)
+```
+
+<span style='color: blue'>
+*Yes, based on this model, growth is positively correlated with vote. $\beta = 3.04$.*  
+</span>
+
+### (1c)  
+Plot the scatter plot of vote versus growth, and include in the plot:  
+(i) the posterior mean of the regression line;  
+(ii) the 95% credible interval for the regression line; and  
+(iii) the 95% prediction interval.  
+```{r}
+nsim <- 1e4
+growth_seq <- seq(from = min(d$growth), to = max(d$growth), length.out = 100)
+post_samples <- extract.samples(lmod, n = nsim)
+
+# get E(vote|growth)
+mus <- sapply(growth_seq, 
+              function(growth) post_samples$a + post_samples$b*(growth - growth_bar)) 
+mu_mean <- apply(mus, 2, mean)
+mu_PI   <- apply(mus, 2, PI, prob=0.95)
+
+
+# get yhat (predicted vote)
+yhats <- sapply(growth_seq, 
+                function(growth) rnorm(nsim, post_samples$a + post_samples$b*(growth - growth_bar), post_samples$sigma))
+yhat    <- apply(yhats, 2, mean)
+yhat_PI <- apply(yhats, 2, PI, prob=0.95)
+```
+
+
+```{r}
+plot(vote ~ growth, data = d, col = "black")
+lines(growth_seq, mu_mean, col = "black", lty = 1, lwd=2)
+shade(mu_PI, growth_seq)
+shade(yhat_PI, growth_seq, col = col.alpha("blue",0.15))
+```
+
+
+### (1d)  
+In the 2016 election (Hillary vs Trump), the average growth in preceding years was about 2%. 
+According to the model, what is the forecasted vote share for Hillary? And what is the the probability that Hillary would win the popular vote?  
+```{r}
+yhat_growth2_dist <- rnorm(nsim, post_samples$a + post_samples$b*(2.00 - growth_bar), post_samples$sigma)
+precis(yhat_growth2_dist, digits = 2)
+```  
+<span style='color: blue'>
+*The forecasted vote share for Hillary is 52.3 with a 95% credible interval of 46.5 to 58.1.*  
+</span>
+
+```{r}
+print(round(mean(yhat_growth2_dist > 50),2))
+```  
+<span style='color: blue'>
+*And the probability that Hillary would win the populat vote (i.e. > 50%) is about 0.74*  
+</span>
+
+# 4M3  
+Translate the <code>quap</code> model formula into a mathematical model definition.  
+```{r}
+###y ~ dnrom(mu, sigma)
+###mu <- a + b*x
+###a <- dnorm(0, 10)
+###b <- dunif(0, 1)
+###sigma ~ dexp(1)
+```  
+
+$$
+y_i\mid\alpha, \beta, \sigma, x_i  \sim \mathcal{N}(\alpha + \beta x_i, \sigma)  \\
+\alpha \sim \mathcal{N}(0, 10) \\
+\beta \sim Unif(0,1) \\
+\sigma \sim Exp(1) \\
+$$  
+
+# 4H5  
+Return to data(cherry_blossoms) and model the association between blossom date (doy) and March temperature (temp).  
+Note that there are many missing values in both variables. You may consider a linear model, a polynomial, or a spline on temperature. How well does temperature trend predict the blossom trend?  
+
+```{r}
+nsim <- 1e4
+data("cherry_blossoms")
+dim(cherry_blossoms)
+d <- cherry_blossoms[!is.na(cherry_blossoms$temp) & !is.na(cherry_blossoms$doy), ]
+dim(d)
+d$temp_s <- (d$temp - mean(d$temp))/sd(d$temp)
+d$temp_s2 <- d$temp_s^2
+d$temp_s3 <- d$temp_s^3
+
+m1 <- quap(
+          alist(
+            doy ~ dnorm(mu, sigma),
+            mu <- a + b1*(temp_s) ,
+            a ~ dnorm(10, 5),
+            b1 ~ dnorm(0,3),
+            sigma ~ dnorm(90,10)
+          ), data = d
+        )
+
+m2 <- quap(
+          alist(
+            doy ~ dnorm(mu, sigma),
+            mu <- a + b1*(temp_s) + b2*(temp_s2),
+            a ~ dnorm(10, 5),
+            b1 ~ dnorm(0, 10),
+            b2 ~ dexp(1),
+            sigma ~ dnorm(90, 10)
+          ), data = d
+        )
+
+m3 <- quap(
+          alist(
+            doy ~ dnorm(mu, sigma),
+            mu <- a + b1*(temp_s) + b2*(temp_s2) + b3*(temp_s3),
+            a ~ dnorm(10, 5),
+            b1 ~ dnorm(0, 10),
+            b2 ~ dexp(1),
+            b3 ~ dnorm(0, 5),
+            sigma ~ dnorm(90, 10)
+          ), data = d
+        )
+precis(m1)
+
+```
+
+```{r}
+seq_temp <- seq(from=min(d$temp_s), to=max(d$temp_s), length.out=nsim)
+
+mu_m1 <- link(m1, data=list(temp_s = seq_temp))
+mu_mean1 <- apply(mu_m1, 2, mean)
+sim_doy <- sim(m1, data=list(temp_s = seq_temp))
+yhat_pi_m1 <- apply(sim_doy, 2, PI, prob = 0.89)
+
+## mu_m2 <- link(m2, data=list(temp_s = seq_temp, temp_s2 = seq_temp^2))
+## mu_mean2 <- apply(mu_m2, 2, mean)
+## mu_pi_m2 <- apply(mu_m2, 2, PI, prob = 0.89)
+
+## mu_m3 <- link(m3, data=list(temp_s = seq_temp, temp_s2 = seq_temp^2, temp_s3 = seq_temp^3))
+## mu_mean3 <- apply(mu_m3, 2, mean)
+## mu_pi_m3 <- apply(mu_m3, 2, PI, prob = 0.89)
+```
+
+```{r}
+plot(doy~temp_s, data = d, col=col.alpha(rangi2, 0.3), pch=16)
+lines(seq_temp, mu_mean1, col="orange")
+shade(yhat_pi_m1, seq_temp)
+#lines(seq_temp, mu_mean2, col="darkgreen")
+#lines(seq_temp, mu_mean3, col="blue")
+```
+
+<span style='color: blue'>
+*Judging by the credible intervals of the precis output and after seeing the above plot, there seems to be a negative correlation between temperature and day of the year when there are cherry blossoms. However, this does not mean that <code>temperature</code> is a great predictor of <code>doy</code> given that the prediction intervals are very wide, and some observations definitely lie outside of them.*
+</span>
+
+# 4H6  
+Simulate the prior predictive distribution for the cherry blossom spline in the chapter. Adjust the prior on the weights and observe what happens. What do you think the prior on the weights is doing?  
+$$
+D_i \sim \mathcal{N}(\mu_i, \sigma) \\
+\mu_i = \alpha + \sum_i^K w_kB_{k,i} \\
+\alpha \sim \mathcal{N}(100, 10) \\
+w_j \sim \mathcal{N}(0, 10) \\
+\sigma \sim Exp(1)
+$$  
+
+```{r, 4h6b}
+data("cherry_blossoms")
+d <- cherry_blossoms[complete.cases(cherry_blossoms$doy), ]
+nsim <- 1e2
+
+# create the B matrix
+num_knots <- 15
+knot_list <- quantile(d$year, probs = seq(0, 1, length.out = num_knots))
+B <- splines::bs(d$year, knots = knot_list[-c(1, num_knots)], degree = 3, intercept = TRUE)
+
+# priors
+a <- rnorm(nsim, 100, 10)
+sigma <- rexp(nsim, 1) 
+
+get_y_priors <- function(Wmean, Wsd, B, nsim, a, sigma) {
+  W <- matrix(ncol = ncol(B), nrow = nsim)
+  for(i in 1:ncol(B)) {
+    W[,i] <- rnorm(nsim, Wmean, Wsd)
+  }
+  o <- sapply(1:nrow(d), function(i) rnorm(nsim, a + W%*%t(B), sigma))
+  o
+}
+
+plot_priors <- function(y_priors, color, Wmean, Wsd) {
+  dens(y_priors[1, ], adj = 1, col = col.alpha(color, alpha = .5),
+       ylim = c(0, 3), xlim = range(y_priors), main = paste0("W~N(", Wmean,",",Wsd,") priors"))
+  for(i in 2:100){
+    dens(y_priors[i, ], adj = 1, add = T, col = col.alpha(color, alpha = .5))
+  }
+  #legend("topright", legend = c("y priors"), lty = c(1), col = c(color))
+}
+
+```  
+```{r}
+y_priors1 <- get_y_priors(Wmean=0,  Wsd=10, B=B, nsim=nsim, a=a, sigma=sigma)
+y_priors2 <- get_y_priors(Wmean=0,  Wsd=5,  B=B, nsim=nsim, a=a, sigma=sigma)
+y_priors3 <- get_y_priors(Wmean=0,  Wsd=1,  B=B, nsim=nsim, a=a, sigma=sigma)
+y_priors4 <- get_y_priors(Wmean=50, Wsd=.5, B=B, nsim=nsim, a=a, sigma=sigma)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot_priors(y_priors1, "darkseagreen4", 0, 10)
+plot_priors(y_priors2, "lightsalmon3", 0, 5)
+plot_priors(y_priors1, "lightslateblue", 0, 1)
+plot_priors(y_priors1, "orange2", 10, 0.5)
+```  
+```{r}
+cb_1 <- quap(
+  alist(
+    T ~ dnorm(mu, sigma),
+    mu <- a + B %*% w,
+    a ~ dnorm(100, 10),
+    w ~ dnorm(0, 10),
+    sigma ~ dexp(1)
+  ),
+  data=list(T=d$doy, B=B), 
+  start = list(w=rep(0, ncol(B)))
+) 
+prior_samp <- extract.prior(cb_1)
+mu1 <- link(cb_1, post = prior_samp)
+mu_mean_1 <- apply(mu1, 2, mean)
+mu_PI_1 <- apply(mu1, 2, PI, 0.95)
+```  
+Now, by tightening the W priors $w_i \sim \mathcal{N}(0,5)$
+
+```{r}
+cb_2 <- quap(
+  alist(
+    T ~ dnorm(mu, sigma),
+    mu <- a + B %*% w,
+    a ~ dnorm(100, 10),
+    w ~ dnorm(0, 5),
+    sigma ~ dexp(1)
+  ),
+  data=list(T=d$doy, B=B), 
+  start = list(w=rep(0, ncol(B)))
+) 
+prior_samp <- extract.prior(cb_2)
+mu2 <- link(cb_2, post = prior_samp)
+mu_mean_2 <- apply(mu2, 2, mean)
+mu_PI_2 <- apply(mu2, 2, PI, 0.95)
+```  
+
+Now, by tightening the W priors $w_i \sim \mathcal{N}(0,1)$
+
+```{r}
+cb_3 <- quap(
+  alist(
+    T ~ dnorm(mu, sigma),
+    mu <- a + B %*% w,
+    a ~ dnorm(100, 10),
+    w ~ dnorm(0, 5),
+    sigma ~ dexp(1)
+  ),
+  data=list(T=d$doy, B=B), 
+  start = list(w=rep(0, ncol(B)))
+) 
+prior_samp <- extract.prior(cb_3)
+mu3 <- link(cb_3, post = prior_samp)
+mu_mean_3 <- apply(mu3, 2, mean)
+mu_PI_3 <- apply(mu3, 2, PI, 0.95)
+```  
+
+Now, by tightening the W priors $w_i \sim \mathcal{N}(0,0.5)$  
+
+```{r}
+cb_4 <- quap(
+  alist(
+    T ~ dnorm(mu, sigma),
+    mu <- a + B %*% w,
+    a ~ dnorm(100, 10),
+    w ~ dnorm(0, 5),
+    sigma ~ dexp(1)
+  ),
+  data=list(T=d$doy, B=B), 
+  start = list(w=rep(0, ncol(B)))
+) 
+prior_samp <- extract.prior(cb_4)
+mu4 <- link(cb_4, post = prior_samp)
+mu_mean_4 <- apply(mu4, 2, mean)
+mu_PI_4 <- apply(mu4, 2, PI, 0.95)
+```  
+
+```{r}
+par(mfrow=c(2,2))
+
+plot(d$year, d$doy, col=col.alpha(rangi2,0.3) , pch=16 ,
+     xlab="year" , ylab="day in year" , ylim=c(60,140) , main = "w ~ N(0,10)")
+for ( i in 1:20 ) lines( d$year , mu1[i,] , lwd=1 )
+
+plot(d$year, d$doy, col=col.alpha(rangi2,0.3) , pch=16 ,
+     xlab="year" , ylab="day in year" , ylim=c(60,140) , main = "w ~ N(0,5)")
+for ( i in 1:20 ) lines( d$year , mu2[i,] , lwd=1 )
+
+plot(d$year, d$doy, col=col.alpha(rangi2,0.3) , pch=16 ,
+     xlab="year" , ylab="day in year" , ylim=c(60,140) , main = "w ~ N(0,1)")
+for ( i in 1:20 ) lines( d$year , mu3[i,] , lwd=1 )
+
+plot(d$year, d$doy, col=col.alpha(rangi2,0.3) , pch=16 ,
+     xlab="year" , ylab="day in year" , ylim=c(60,140) , main = "w ~ N(0,0.5)")
+for ( i in 1:20 ) lines( d$year , mu4[i,] , lwd=1 )
+
+```
+
+<span style='color: blue'>
+*As the priors for $w_i$ get tighter and tighter, the lines get straighter and straighter. In other words, the splines (or the weight on the B functions) lose power to bend the curve and produce wiggly <code>doy</code>'s.*
+</span>
+
+# 4H8  
+The cherry blossom spline in the chapter used an intercept a, but technically it doesn't require one. The first basis functions could substitute for the intercept. Try refitting the cherry blossom spline without the intercept. What else about the model do you need to change to make this work?  
+```{r, 4h8}
+num_knots <- 15
+knot_list <- quantile(d$year, probs = seq(0, 1, length.out = num_knots))
+B <- splines::bs(d$year, knots = knot_list[-c(1, num_knots)], degree = 3, intercept = FALSE)
+
+smod <- quap(
+  alist(
+    D ~ dnorm(mu, sigma), 
+    mu <- B %*% w,
+    w ~ dnorm(0, 10),
+    #a ~ dnorm(100, 10),
+    sigma ~ exp(1)
+  ), data = list(D = d$doy, B=B), 
+  start = list(w = rep(0, ncol(B)))
+)
+
+```
+```{r}
+mu <- link(smod)
+mu_PI <- apply(mu$mu, 2, PI, 0.95)
+plot(d$year, d$doy, col = col.alpha(rangi2, 0.3), pch = 16, xlab = "year", ylab="day in the year")
+shade(mu_PI, d$year, col = col.alpha("black", 0.5))
+```
+
+
+<span style='color: blue'>
+*I had to specify no intercept when creating the B matrix, and I also had to remove the prior for $alpha$ because there is no $\alpha$ in this model.*
+</span>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

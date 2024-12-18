@@ -1,0 +1,298 @@
+---
+title: "Homework 7"
+author: "Raul Torres Aragon"
+date: "6/5/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rjags)
+library(rethinking)
+library(tidyverse)
+```
+
+## Heart Attack and Death Rates  
+
+In this exercise you will use the data in hospitals.csv. The data consists of the number of heart attacks (n) that resulted in deaths (y) from 13 hospitals in New York City in the year of 2015 [Albert and Hu, 2019]. Our goal is to learn the death rate pi of each hospital i, and examine their differences. We will also compare the traditional “no pooling” model, with a hierarchical (multilevel) model.  
+
+### Standard model (“no pooling”)  
+
+Let us start by fitting a separate logistic regression for each hospital. That is, consider the following model:  
+
+$$
+Y_i | n_i, P_i \sim Bin(p_i, n_i) \\
+logit(p_i) = \alpha_i \\
+\alpha_i \sim \mathcal{N}(0, 1.5^2)
+$$  
+
+With this in mind, do the following:  
+
+# (1)  
+Fit the model above using either JAGS or Stan, with the following specification: (i) run 4 Markov chains; (ii) if using (JAGS/Stan), run a (burn-in/warmup) period of 1,000 iterations; and, (iii) run 3,000 iterations (for each chain).  
+
+```{r}
+df <- read.csv("hospitals.csv")
+```
+
+
+```{r}
+np_model_code <- "model{
+                    for(i in 1:nrow){
+                      y[i] ~ dbinom(p[i], n[i])
+                      logit(p[i]) <- alpha[i]
+                      alpha[i] ~dnorm(0, 1/(1.5)^2)
+                    }
+                  }"
+
+np_model <- jags.model(file = textConnection(np_model_code),
+                       data = list(y = df$y,
+                                   n = df$n,
+                                   nrow = nrow(df)),
+                       n.chains = 4)
+
+update(np_model, 1e3)
+
+samples <- coda.samples(np_model, 
+                        variable.names = "p", 
+                        n.iter = 3e3)
+```  
+
+
+## (2)  
+After extracting the posterior samples, run some diagnostic checks of your Markov Chain: (i) check the traceplot; (ii) check the effective sample size; (iii) check the Gelman-Rubin diag- nostic (Rhat). Interpret the results—do you see any indication of problems?  
+
+```{r}
+par(mar = c(1,1,1,1))
+plot(samples)
+```  
+
+*Plots show overlap among all chains and through exploration of the same parameter region among all of them. Density plots are all unimodal suggestive  that all chains converge to the same value.*  
+
+```{r}
+effectiveSize(samples)
+```  
+
+*Effective sample sizes are in the 7,000 range, which is great given that our number of iterations was 3,000.*  
+
+```{r}
+gelman.diag(samples)
+```  
+
+*The $\hat{R}$ or Gelman-Rubin diagnostic is 1, which is less than 1.1, hence there is no evidence to suggest the MCMC is not convergent.* 
+
+## (3)  
+Report the posterior means and the 95% credible intervals of $p_i$ for each hospital. Do they seem to differ a lot? In particular, compute the posterior mean and 95% credible interval of the difference $p_7$ (Mount Sinai Roosevelt) against $p_1$ (Bellevue Hospital Center). Compute the posterior probability that Bellevue Hospital Center is better than Mount Sinai Roosevelt.  
+
+```{r}
+samples_df<- samples[[1]] |> as.data.frame()
+samples_df$diff <- samples_df$`p[7]` - samples_df$`p[1]`
+precis(samples_df, prob = 0.95, depth = 2, digits = 2)
+```  
+
+```{r}
+mean(samples_df$diff > 0)
+```  
+*The probability that $p_7$ is better than $p_1$ is about 0.99, so yeah $p_7$ (Mount Sinai) has a higher heart attack deaths than $p_1$ (Bellevue Hospital Center).*  
+
+
+## (4)  
+Compute the posterior probability that each hospital is the “best” hospital (i.e, it has the lower mortality rate). Report the posterior distribution. What are the first, second, and third hospital with higher posterior probabilities of being the best, and what are those probabilities?  
+
+```{r}
+samples_df$diff <- NULL  
+best <- apply(samples_df, 1, which.min)
+barplot(table(best)/length(best), xlabel = "Hospital No.")
+```  
+
+```{r}
+sort(table(best)/length(best), decreasing = TRUE)[1:3]
+
+```  
+*The best hospitals are 1, 2, and 12 as evidenced by the barplot. Their respective probabilities are shown above: 0.451, 0.228, and 0.207 respectively.*  
+
+### Hierarchical/Multilevel model (“partial pooling”)  
+
+The previous model treats each hospital as a separate entity—learning the death rate of one hospital tells us nothing about the death rate of another hospital. We will now consider a hierarchical model, in which information is pooled across hospitals. Consider the model below (this is the “centered” parameterization):  
+
+$$
+Y_i |n_i, p_i ∼ Bin(p_i, n_i) \\
+logit(p_i) = α_i \\
+α_i ∼N(μ,σ^2)  \\
+μ∼N(0,1.5^2) \\
+σ ∼ Exp(1)
+$$  
+
+## (5)  
+Explain the meaning of μ and σ.
+*Because with this link function, the logit of the probability of death for hospital i is linear (with 0 slope), so $\alpha_i$ is just the overall mean heartattack death across hospital i, and $\mu$ is thus the mean across all hospitals.*  
+*$\sigma$ is the overall std. deviation of heart attack deaths across all hospitals.* 
+
+
+## (6)  
+Fit the model above using either JAGS or Stan, with the following specification: (i) run 4 Markov chains; (ii) if using (JAGS/Stan), run a (burn-in/warmup) period of 1,000 iterations; and, (iii) run 3,000 iterations (for each chain). Here, sample only μ and σ. Run some diagnostic checks of your Markov Chain: (i) check the traceplot; (ii) check the effective sample size; (iii) check the Gelman-Rubin diagnostic (Rhat).
+
+
+```{r}
+hm_code<- "model{
+           for(i in 1:nrow){
+             y[i] ~ dbinom(p[i], n[i])
+             logit(p[i]) <- alpha[i]
+             alpha[i] ~ dnorm(mu, 1/sigma^2)
+           }
+           mu ~ dnorm(0, 1/1.5^2)
+           sigma ~ dexp(1)
+         }"
+
+hm <- jags.model(file = textConnection(hm_code),
+                 data = list(y = df$y,
+                             n = df$n,
+                             nrow = nrow(df)),
+                        n.chains = 4)
+
+update(hm, 1e3)
+
+samples <- coda.samples(hm, 
+                        variable.names = c("mu","sigma"), 
+                        n.iter = 3e3)
+
+```  
+
+```{r}
+par(mar=c(1,1,1,1))
+plot(samples)
+
+```  
+
+*Notice the density and chain time plots for sigma don't look pretty. There is reason to belive sigma is not converging.*  
+
+```{r}
+effectiveSize(samples)
+
+```  
+
+*The effective sample size is below 300 for $\sigma$ even when we requested 3,000 iterations, so the chains are very inefficient.* 
+
+```{r}
+gelman.diag(samples)
+
+```  
+
+*Lastly, the  $\hat{R}$ or Gelman-Rubin diagnostic is 1.03, which is less than 1.1, but it's not at 1 like e'd like it to be, so again, we have reason to suspect the MCMC may not be converging for $\sigma$.*    
+
+## (7)  
+Fit the model below using either JAGS or Stan, with the following specification: (i) run 4 Markov chains; (ii) if using (JAGS/Stan), run a (burn-in/warmup) period of 1,000 iterations; and, (iii) run 3,000 iterations (for each chain).Sample only μ and σ. Run some diagnostic checks of your Markov Chain: (i) check the traceplot; (ii) check the effective sample size; (iii) check the Gelman-Rubin diagnostic (Rhat).  
+You now should find much higher effective sample sizes.  
+$$
+Y_i | n_i, p_i ∼ Bin(p_i, n_i) \\ 
+logit(pi) = μ + σ × z_i \\
+z_i \sim N(0,1) \\
+μ \sim N(0, 1.5^2) \\ 
+σ ∼ Exp(1)
+$$  
+```{r}
+hm2_code<- "model{
+  for(i in 1:nrow){
+    y[i] ~ dbinom(p[i], n[i])
+    logit(p[i]) <-  mu + sigma*z[i]
+    z[i] ~ dnorm(0,1)
+  }
+  
+  mu ~ dnorm(0, 1/1.5^2)
+  sigma ~ dexp(1)
+  
+  #predictive
+  logit(pnew) <- alpha_new
+  alpha_new ~ dnorm(mu, 1/sigma^2)
+}"
+
+hm2 <- jags.model(file = textConnection(hm2_code),
+                  data = list(y = df$y,
+                              n = df$n,
+                              nrow = nrow(df)
+                      ),
+                      n.chains = 4)
+
+update(hm2, 1e3)
+
+samples<- coda.samples(hm2, 
+                       variable.names = c("mu","sigma"), 
+                       n.iter = 3e3)
+
+```  
+```{r}
+par(mar = c(1,1,1,1))
+plot(samples)
+
+```  
+
+```{r}
+effectiveSize(samples)
+```  
+
+```{r}
+gelman.diag(samples)
+```
+
+*As expected, the effective sample size is much higher. The $\hat{R}$ or Gelman-Rubin diagnostic is 1.00 for $\sigma$ now, which shows no evidence of non-convergence.*  
+
+## (8)  
+Report the posterior means and the 95% credible intervals of pi for each hospital. Are the results very different from the “no pooling” model? If so how? Explain what is happening in this model
+
+
+```{r}
+samples<- coda.samples(hm2, c("p"), n.iter = 3e3)
+samples_df <- samples[[1]] |> as.data.frame()
+precis(samples_df, depth = 2, prob = .95)
+```  
+
+*Major difference is that the probabilities of heart attack death are more similar across all hospotals now.*
+
+## (9)  
+
+Compute the posterior mean and 95% credible interval of the difference p7 (Mount Sinai Roosevelt) against p1 (Bellevue Hospital Center). Compute the posterior probability that Bellevue Hospital Center is better than Mount Sinai Roosevelt. Did these results change?  
+
+```{r}
+samples_df$diff <- samples_df$`p[7]` - samples_df$`p[1]`
+precis(samples_df[,"diff"], prob = 0.95, depth = 2)
+```  
+
+```{r}
+mean(samples_df$diff > 0)
+```  
+
+*Two changes: 1) The difference between the two hospitals is now 0.01, down from 0.1 as we found on the pooled example. 2) The probability that p1 is better than p7 is not 0.99 anymore. It is 0.74 now--much smaller.*  
+
+## (10)  
+
+Finally, compute the posterior probability that each hospital is the “best” hospital (i.e, it has the lower mortality rate). Report the posterior distribution. What are the first, second, and third hospital with higher posterior probabilities of being the best, and what are those probabilities? How did these results change compared to the “no pooling” model?
+
+
+```{r}
+samples_df$diff <- NULL
+
+# compute the posterior probability that each hospital is the best hospital
+best<- apply(samples_df, 1, which.min)
+barplot(table(best)/length(best))
+```  
+
+```{r}
+sort(table(best)/length(best), decreasing = TRUE)[1:3]
+
+```
+
+*The best hospitals are still 1,2, and 12, but the ranking is now different. Hospital 12 is now second. Their overall probabilities of being the best are all reduced from what the previous model found.*  
+
+
+
+
+
+
+
+
+
+
+
+
+
+

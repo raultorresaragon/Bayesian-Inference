@@ -1,0 +1,987 @@
+---
+title: "Homework 5"
+author: "Raul Torres Aragon"
+date: "5/6/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+library(rjags)
+library(rstan)
+library(dplyr)
+library(dagitty)
+```
+
+# Problem 1 (from the textbook)  
+
+# 6M3  
+Learning to analyze DAGs requires practice. For each of the four DAGs below, state which variables, if any, you must adjust for (condition on) to estimate the total causal influence of X on Y.  
+
+![](Rethinking6M3_dags.png)  
+  
+  
+
+
+#### top left  
+There are three paths from X to Y. One direct X -> Y, one through Z, and one through Z and A. Z is confounder as it influences both X an Y. Thus I would want to control for Z. By controlling for Z I close all backdoors, includong the one through Z and A.  
+```{r}
+tl <- dagitty("dag {
+              X -> Y
+              X <- Z -> Y
+              Z <- A -> Y
+              }")
+adjustmentSets(tl, exposure = "X", outcome = "Y")
+```  
+
+
+#### top right  
+In this case, there is not need to control for Z because doing so would block the effect of X on Y. If we wanted to isolate the effect of X on Y (not through Z), then we would want to control for Z, but that's not what we're doing here. There is no need to control for A given that by ommitting Z we cut the path from X to Y through A.  
+```{r}
+tr <- dagitty("dag {
+              X -> Y
+              X -> Z -> Y
+              Z <- A -> Y
+              }")
+adjustmentSets(tr, exposure = "X", outcome = "Y")
+```  
+
+
+#### bottom left  
+Z is a collider or common cause; hence, controlling for Z would bias the estimate of the association of X on Y. No need to control for Z then. Also no need to bring A into the mix.   
+```{r}
+bl <- dagitty("dag {
+              X -> Y
+              X -> Z <- Y
+              X <- A -> Z
+              }")
+adjustmentSets(bl, exposure = "X", outcome = "Y")
+```  
+
+
+#### bottom right  
+A causes both X and (through Z) Y, thus, A is a confounder. Once we account for A, we don't to control for Z.  
+```{r}
+br <- dagitty("dag {
+              X -> Y
+              X -> Z -> Y
+              X <- A -> Z
+              }")
+adjustmentSets(br, exposure = "X", outcome = "Y")
+```  
+
+
+
+# 6H3  
+All three problems below are based on the same data. The data in data(foxes) are 116 foxes from 30 different urban groups in England. These foxes are like street gangs. Group size varies from 2 to 8 individuals. Each group maintains its own urban territory. Some territories are larger than others. The area variable encodes this information. Some territories also have more avgfood than others. We want to model the weight of each fox. For the problems below, assume the following DAG:  
+
+![](fox_dag.png)
+  
+Use a model to infer the total causal influence of area on weight. Would increasing the area available to each fox make it heavier (healthier)? You might want to standardize the variables. Regardless, use prior predictive simulation to show that your model’s prior predictions stay within the possible outcome range.  
+
+```{r}
+wolf_dag <- dagitty("dag {
+                     Ar -> F 
+                     F -> G
+                     F -> W <- G
+                   }")
+adjustmentSets(wolf_dag, exposure = "Ar", outcome = "W")
+```
+
+```{r}
+data(foxes)
+sfoxes <- foxes |> mutate(group = group,
+                          food = standardize(avgfood),
+                          groupsize = standardize(groupsize),
+                          area = standardize(area),
+                          weight = standardize(weight))
+mod <- quap(
+           alist(
+               weight ~ dnorm(mu, sigma),
+               mu <- a + b_wa*area,
+               a ~ dnorm(0,.5),
+               b_wa ~ dnorm(0,.5),
+               sigma ~ dexp(1)
+           ), data = sfoxes
+        )
+precis(mod)
+```  
+
+```{r}
+prior <- extract.prior(mod)
+a_seq <- c(-2,2)
+mu <- link(mod, post=prior, data=list(area=a_seq))
+plot(NULL, xlim=a_seq, ylim=a_seq, xlab="area (standardized)", ylab="weight (standardized)", main = "prior simulation")
+for(i in 1:200) lines(a_seq, mu[i,], col=col.alpha("black", 0.3)) 
+```
+*Average Food is a mediator standing in between Area and Weight. As such, it's better to omit it. Given that Group Size does not cause Area (based on this DAG), there is also no need to control for it. (If Average Food did not cause Group Size, we could include Group Size to gain precision.) Dagitty confirmed that all we need in our model of Weight is Area.*  
+*Now, these priors are not very helpful. They do seem to produce more lines that are flat, but there are some crazy originating from more than 2 standard deviations away from mean Weight. Here is our observed standardized data:*  
+
+```{r}
+plot(weight~area, data = sfoxes, xlab="area (std)", ylab="weight (std)", main = "observed data")
+```
+
+
+# 6H4  
+Now infer the causal impact of adding food to a territory. Would this make foxes heavier? Which covariates do you need to adjust for to estimate the total causal influence of food?  
+
+```{r}
+adjustmentSets(wolf_dag, exposure = "F", outcome = "W")
+```
+
+```{r}
+mod2 <- quap(
+            alist(
+                weight ~ dnorm(mu, sigma),
+                mu <- a + b_wf*food,
+                a ~ dnorm(0,.5),
+                b_wf ~ dnorm(0,1),
+                sigma ~ dexp(1)
+            ), data = sfoxes
+         )
+precis(mod2)
+```  
+
+*Based on this DAG, there is no need to control for Group Size. We can directly model the impact of Average Food on Weight. And it looks like adding one standard deviation of food does not seem to have a noticeable change on weight.*
+
+# 6H5  
+Now infer the causal impact of Group Size. Which covariates do you need to adjust for?  
+Looking at the posterior distribution of the resulting model, what do you think explains these data? That is, can you explain the estimates for all three problems? How do they go together?  
+
+```{r}
+adjustmentSets(wolf_dag, exposure = "G", outcome = "W")
+```
+
+```{r}
+mod3 <- quap(
+            alist(
+                weight ~ dnorm(mu, sigma),
+                mu <- a + b_wg_f*group + b_wf_g*food,
+                a ~ dnorm(0,0.5),
+                b_wg_f ~ dnorm(0,0.5),
+                b_wf_g ~ dnorm(0,0.5),
+                sigma ~ dexp(1)
+            ), data = sfoxes
+         )
+precis(mod3)
+```
+*When inspecting the causal relationship between Group Size and Weight, Food becomes a confounder, hence it needs to be accounted for. (dagitty agreed.)*  
+*Now, there does not seem to be a noticeable impact on weight. That has been the case in all three models. This tells me that, maybe, these models add redundant information. That is, they are all highly correlated among themselves and thus the posterior intervals are wide (nothing seems "significant" or credible). Running a simple correlation between Group Size and Food turns out to be high.* <code>cor(groupsize, food) = 0.90</code>.  
+
+
+# Problem 2: Access to clean water and infant mortality  
+
+In this exercise, you will use Bayesian linear regression to investigate the association between access to clean water and infant mortality. We will use the Quality of Governance dataset (<code>qog_jan16.csv</code>) from January 2016 [Teorell et al., 2016, Aronow and Miller, 2019]. This exercise is based on the example found in Aronow and Miller [2019, Sec. 4.4].  
+
+• cname: country name;  
+• wdi morinftot: infant mortality rate, as measured by the number of infants died before reaching one year of age per 1,000 live births, in a given year;  
+• epiwatsup: access to clean water, as measured by the percentage of the population with access to a source of clean drinking water.  
+• wdi_accelectr: access to electricity, as measured by the percentage of the population with acceess to electricity.  
+
+Here we will assume that the data is an i.i.d sample from the joint distribution of these three variables. For all questions below let $Y_i$ denote wdi_morinftot, $X_i$ denote the (centered) epi_watsup, and $Z_i$ denote the (centered) wdi_accelectr.  
+## 2.1 Sample Linear Model  
+
+### (a)  
+Consider a simple Bayesian linear regression model to predict infant mortality using access to clean water, with the following likelihood:
+$$
+Y_i | X_i,\alpha,\sigma ∼ \mathcal{N}(\mu_i,\sigma)  \\
+\mu_i = \alpha_0 + \alpha_1X_i
+$$  
+What is the meaning of the intercept $\alpha_0$?  
+*This is the average infant mortality rate for those with no access to clean water, BUT after centering access to clean water, the intercept is now the average infant mortality when access to clean water is held at its mean level.*  
+
+What is the meaning of the slope ($\alpha_1$)?  
+*The slope represents the change in mortality rate with a one percentage point change of clean water access from its mean (because we centered it)*  
+
+What is the meaning of the standard deviation $\sigma$?  
+$\sigma$ *represents the spread of variation in infant mortality rate*    
+
+$$
+\text{morinftot} \sim \mathcal{N}(\mu_i, \sigma) \\
+\mu = \alpha_0+\alpha_1\text{water} \\
+\alpha_0 \sim \mathcal{N}(30, 10) \\
+\alpha_1 \sim \mathcal{N}(-10, 5) \\
+\sigma \sim \text{exp}(50)
+$$  
+
+Using this knowledge, choose some weakly informative priors for all parameters, and justify your choice.  
+
+*When access to water is at its mean, I expect the average infant mortality rate to be around 30 per 1,000, and most of it between 10 and 40*  
+*For a one percentage point increase in water access from the mean water access, I'd think mortality rate decreases by 10 deaths per 1000 babies.*  
+*Mortality rate cannot be less than zero, so I went with exponential distribution at rate=50. Seems pretty flat.*  
+
+### (b)  
+Compute the posterior distribution of all parameters, and report the posterior mean and 95% credible intervals. Interpret the parameters.  
+
+```{r include=FALSE}
+d <- readr::read_csv("qog_jan16.csv")
+d$epi_watsup <- d$epi_watsup - mean(d$epi_watsup)
+d$wdi_accelectr <- d$wdi_accelectr - mean(d$wdi_accelectr)
+```
+
+```{r 21a, echo=FALSE}
+mod1_code <- "
+    data {
+         D <- dim(M)
+         n <- D[1]
+    }
+       
+    model{
+    
+         # likelihood
+         for(i in 1:n){
+           M[i] ~ dnorm(mu[i], tau)
+         }
+         mu = a0 + a1*water
+    
+         # priors
+         a0 ~ dnorm(a0m, pow(a0s, -2))
+         a1 ~ dnorm(a1m, pow(a1s, -2))
+         sigma ~ dexp(lambda)
+         tau <- pow(sigma, -2)
+    }
+"
+
+mod1 <- jags.model(file = textConnection(mod1_code), 
+                   data = list(M = d$wdi_mortinftot,
+                               water = d$epi_watsup,
+                               a0m = 30,
+                               a0s = 10,
+                               a1m = -10,
+                               a1s =  5,
+                               lambda = 50
+                               )
+                   )
+
+mod1_samps <- coda.samples(mod1, 
+                           variable.names = c("a0", "a1","sigma"), 
+                           n.iter = 1e4)
+mod1_samps_df <- as.data.frame(mod1_samps[[1]])
+precis(mod1_samps_df, prob = 0.95)
+```  
+
+*Based on this model's results, one percentage increase in population access (from the mean population access )to clean water decreases infant deaths before reaching 1 by about .60. Also, when access to clean water is set at its mean level, the expected average of infant deaths is about 27 per 1,000--so my prior wasn't that bad. Lucky guess.*  
+
+### (c)  
+Plot the scatter plot of mortality versus access to clean water, and include in the plot: (i) the posterior median of the regression line; (ii) the 95% credible interval for the regression line; and (iii) the 95% prediction interval.  
+```{r}
+### obtain expected value of y given x and credible interval
+post <- mod1_samps_df
+mu_link <- function(x) post$a0 + post$a1*(x)
+water_seq <- seq(-100, 100, length.out = 200)
+mu <- sapply(water_seq, mu_link)
+mu_median <- apply(mu, 2, median)
+mu_ci <- apply(mu, 2, PI, prob = 0.95)
+```
+
+```{r}
+### obtain predicted interval
+ysim_fun <- function(x) {
+                rnorm(n = nrow(post),
+                     mean = post$a0 + post$a1*x,
+                     sd = post$sigma)
+}
+ysim <- sapply(water_seq, ysim_fun)
+ysim_pi <- apply(ysim, 2, PI, prob = 0.95)
+```
+
+
+```{r}
+# plot raw data
+plot(wdi_mortinftot ~ epi_watsup, data=d, 
+     ylab = "infant mortality", 
+     xlab = "pct pop with access to clean water",
+     main = "Access to clean water and Infant Mortality \n(deaths per 1,000 before 1 year of age)")
+
+# plot MAP line
+lines(water_seq, mu_median, lwd=2)
+
+# shaded region for credible interval
+shade(mu_ci, water_seq, col = col.alpha("lightsalmon", 0.55))
+
+# shaded region for predictive interval
+shade(ysim_pi, water_seq, col = col.alpha("lightskyblue1", 0.35))
+```  
+
+### (d)  
+Perform a posterior predictive check overlaying the density of the observed data against the density of 200 simulated datasets. Does the model seem to fit the data well?  
+
+```{r}
+plot(density(d$wdi_mortinftot), lwd = 3, ylim = c(0, 0.03))
+for(i in 1:200) {
+  y_new <- sapply(d$epi_watsup, function(x) rnorm(1, post$a0[1:200] + post$a1[1:200]*x, post$sigma[1:200]))
+  lines(density(y_new), col = col.alpha("dodgerblue1", 0.15))
+}
+```  
+  
+  
+*The model does not seem to fit the data well anywhere.*  
+
+### (e)  
+Can the previous regression coefficient of access to clean water be interpreted causally? Yes? No? Partly? What are potential confounders of the relationship between clean water and infant mortality? Draw a DAG that illustrates your argument.  
+
+*No, the clean water coefficient cannot be interpreted causally. There are several confounders, for example access to electricity, or proximity to a hospital. One could also argue that communities with no access to clean water also have no access to contraceptive methods which increases pregnancy and thus affect infant mortality*  
+*Consider a DAG were there is an unobserved factor U (income opportunities, for example) that affects access to water (W), access to contraception (C), and access to electricity (E). Maybe the lack of income opportunities keeps people "stuck" in those communities. Now assume that access to contraception, and access to electricity affect infant mortality (M). This unobserved confounder would have to be controlled for or blocked to recover the effect of W on M.*  
+
+```{r 2edag}
+p2 <- dagitty("dag {
+              U [latent]
+              W -> M
+              E -> M
+              C -> M
+              U -> {W E C}
+              }")
+coordinates(p2) <- list(x=c(U=0, C=1, W=1, E=1,  M=2),
+                        y=c(U=0, C=1, W=0, E=-1, M=0))
+drawdag(p2)
+```  
+  
+*In this example we'd have to also control for E and C as well to close non-W causal paths leading to M*.  
+
+### (f)   
+Now fit a regression model to predict infant mortality using both access to clean water and access to electricity. That is, consider the following likelihood:  
+$$
+Y_i | X_i,Z_i,\gamma,\sigma \sim \mathcal{N}(\mu_i,\sigma) \\ 
+\mu_i = \gamma_0 + \gamma_1X_i + \gamma_2Z_i
+$$  
+Again, use weakly informative priors. Report the posterior mean and 95% credible intervals of all parameters. How did the regression coefficient related to access to clean water change? (that is, compare $\gamma_1$ with $\alpha_1$). Is this likely to be better estimate of the causal effect of access to clean water in infant mortality? Draw a DAG to illustrate your arguments.  
+
+```{r 2f}
+mod2_code <- "
+    data{
+      D <- dim(M)
+      n <- D[1]
+    }  
+    
+    model{
+    
+      # likelihood    
+      for(i in 1:n){
+        M[i] ~ dnorm(mu[i], tau)
+      } 
+      
+      # posterior predictive
+      for(i in 1:n){
+        ynew[i] ~ dnorm(mu[i], tau)
+      }
+     
+      mu = g0 + g1*water + g2*electric
+     
+      # priors
+      g0 ~ dnorm(0, pow(100, -2))
+      g1 ~ dnorm(0, pow(100, -2))
+      g2 ~ dnorm(0, pow(100, -2))
+      sigma ~ dexp(50)
+      tau <- pow(sigma, -2)    
+    }
+"
+
+mod2 <- jags.model(file = textConnection(mod2_code), 
+                   data = list(M = d$wdi_mortinftot,
+                               water = d$epi_watsup,
+                               electric = d$wdi_accelectr),
+                   quiet = TRUE)
+
+mod2_samps <- coda.samples(mod2, 
+                           variable.names = c("g0", "g1", "g2", "sigma"), 
+                           n.iter = 1e4)
+
+mod2_samps_df <- as.data.frame(mod2_samps[[1]])
+precis(mod2_samps_df, prob = 0.95)
+```  
+
+*The coefficient of $\gamma_1$ shrunk compared to $\alpha_1$. This is likely due to the fact that access to electricity and access to water are correlated. Although this certainly controls for E, a potential confounder, it's still not enough to declare $\gamma_1$ the average treatment effect of W on M as there are other confounders (open paths from U to M).*  
+
+```{r}
+drawdag(p2)
+```  
+  
+  
+## 2.2 Quadratic Model  
+
+### (a)  
+Now consider a quadratic model for conditional mean, as specified below:  
+$$
+Y_i|X_i,\beta,\sigma \sim \mathcal{N}(\mu_i,\sigma) \\
+\mu_i = \beta_0 + _beta_1Xi + \beta_2X_i^2
+$$  
+```{r}
+mod3_code <- "
+  data{
+    D <- dim(M)
+    n <- D[1]
+  }
+
+  model{
+
+    for(i in 1:n){
+      #likelihood
+      M[i] ~ dnorm(mu[i], tau)
+    
+      #predictive posterior
+      y_pred[i] ~ dnorm(mu[i], tau)
+    }
+  
+    mu = b0 + b1*water + b2*water2
+ 
+    #priors
+    b0 ~ dnorm(0, pow(100, -2))
+    b1 ~ dnorm(0, pow(100, -2))
+    b2 ~ dnorm(0, pow(100, -2))
+    sigma ~ dexp(50)
+    tau <- pow(sigma, -2)
+  }
+" 
+
+mod3 <- jags.model(file = textConnection(mod3_code),
+                   data = list(M = d$wdi_mortinftot,
+                               water = d$epi_watsup,
+                               water2 = d$epi_watsup^2),
+                   quiet = TRUE)
+
+mod3_samps <- coda.samples(mod3,
+                           n.iter = 1e4,
+                           variable.names = c("b0","b1","b2","sigma"))
+
+mod3_samps_df <- as.data.frame(mod3_samps[[1]])
+
+y_pred <- coda.samples(mod3, n.iter = 200, variable.names = "y_pred")
+
+```  
+
+### (b)  
+Plot the scatter plot of mortality versus access to clean water, and include in the plot: (i) the posterior median of the regression line; (ii) the 95% credible interval for the regression line; and (iii) the 95% prediction interval.  
+
+```{r}
+### obtain expected value of y given x and credible interval
+post <- mod3_samps_df
+mu_link <- function(x) post$b0 + post$b1*(x) + post$b2*(x^2)
+water_seq <- seq(-100, 100, length.out = 200)
+mu <- sapply(water_seq, mu_link)
+mu_median <- apply(mu, 2, median)
+mu_ci <- apply(mu, 2, PI, prob = 0.95)
+```
+
+```{r}
+### obtain predicted interval
+ysim_fun <- function(x) {
+                rnorm(n = nrow(post),
+                     mean = post$b0 + post$b1*x + post$b2*x^2,
+                     sd = post$sigma)
+}
+ysim <- sapply(water_seq, ysim_fun)
+ysim_pi <- apply(ysim, 2, PI, prob = 0.95)
+```
+
+
+```{r}
+# plot raw data
+plot(wdi_mortinftot ~ epi_watsup, data=d, 
+     ylab = "infant mortality", 
+     xlab = "pct pop with access to clean water",
+     main = "Access to clean water and Infant Mortality \n(deaths per 1,000 before 1 year of age)")
+
+# plot MAP line
+lines(water_seq, mu_median, lwd=2)
+
+# shaded region for credible interval
+shade(mu_ci, water_seq, col = col.alpha("lightsalmon", 0.55))
+
+# shaded region for predictive interval
+shade(ysim_pi, water_seq, col = col.alpha("lightskyblue1", 0.35))
+```  
+
+### (c)  
+Perform a posterior predictive check overlaying the density of the observed data against the density of 200 simulated datasets. Does the model seem to fit the data better than before?  
+
+```{r}
+plot(density(d$wdi_mortinftot), lwd = 3, ylim = c(0, 0.03))
+for(i in 1:200) {
+  y_new <- sapply(d$epi_watsup, function(x) rnorm(1, post$b0[1:200] + post$b1[1:200]*x + post$b2[1:200]*x^2, post$sigma[1:200]))
+  lines(density(y_new), col = col.alpha("dodgerblue1", 0.15))
+}
+```  
+
+*Quadratic model is a much better fit for these data as seen in the plot; however, around zero, the model is not doing great. Furthermore, some predicted infant mortality rates are below zero (which makes no sense) as shown in the previous plot.*  
+
+### (d)  
+Report the posterior means and 95% credible intervals of the parameters. In this quadratic model, can we interpret the impact of a change in $X_i$ on our predictions of $Y_i$ by simply reading one regression coefficient? Why, or why not?  
+
+```{r}
+precis(post)
+```  
+
+*No, we cannot interpret the impact of a change in $X_i$ on our predictions of $Y_i$ by simply reading one regression coefficient because $X_i$ is not part of two coefficients $b_1$ and $b_2$. Thus a one unit change in $X$ is now  
+$$
+\frac{\partial E[Y_i|X_i]}{\partial x_i} = \frac{\partial}{\partial x}[\beta_0+\beta_1x_i+\beta_2x_i^2] = \beta_1+2\beta_2x_i
+$$  
+units in $Y_i$.  
+
+### (e)  
+Define the average partial derivative of $X_i$ on $Y_i$ as,
+$$
+APD_{yx} = \text{E}\bigl[\frac{\partial E(Y_i|X_i)}{\partial X_i}\bigr]
+$$  
+Given our previous regression model, it is easy to show that the APD equals:  
+$$ 
+APD_{yx} = \beta_1+2\beta_2E[X_i].
+$$
+The average partial derivative would be a comparable quantity to the regression coefficient $\alpha_1$ of the simple linear regression model (without the quadratic term). Note that, in order to estimate the APD, we need to model $X_i$. 
+Estimate the derivative using a Gaussian likelihood for $X_i$. Namely,  
+$$
+X_i | \mu_{x_i}, \sigma_{x_i} \sim \mathcal{N}(\mu_{x_i},\sigma_{x_i})
+$$  
+Use weakly informative priors. Report the posterior mean and 95% credible intervals of the APD. Is the APD very different from the regression coefficient $\alpha_1$ from the simple linear regression model?  
+
+```{r}
+mod3b_code <- "
+  data{
+    D <- dim(M)
+    n <- D[1]
+  }
+
+  model{
+    for(i in 1:n){
+      #likelihood
+      M[i] ~ dnorm(mu[i], tau)
+    
+      #predictive posterior
+      y_pred[i] ~ dnorm(mu[i], tau)
+      
+      # APD
+      X[i] ~ dnorm(mu_x, tau_x)
+      apd_i[i] = b1 + 2*b2*X[i]
+    }
+    
+    apd = b1 + 2*b2*mu_x
+    mu = b0 + b1*water + b2*water2
+
+    #priors
+    b0 ~ dnorm(0, pow(100, -2))
+    b1 ~ dnorm(0, pow(100, -2))
+    b2 ~ dnorm(0, pow(100, -2))
+    sigma ~ dexp(50)
+    tau <- pow(sigma, -2)
+    
+    mu_x ~ dnorm(0, pow(1, -2))
+    sigma_x ~ dexp(1)
+    tau_x <- pow(sigma_x, -2)
+  }
+" 
+
+mod3b <- jags.model(file = textConnection(mod3b_code),
+                    data = list(M = d$wdi_mortinftot,
+                                X = d$epi_watsup,
+                                water = d$epi_watsup,
+                                water2 = d$epi_watsup^2),
+                    quiet = TRUE)
+
+mod3b_samps <- coda.samples(mod3b,
+                            n.iter = 1e4,
+                            variable.names = c("b0","b1","b2","sigma","apd"))
+
+mod3b_samps_df <- as.data.frame(mod3b_samps[[1]])
+
+y_pred <- coda.samples(mod3b, n.iter = 200, variable.names = "y_pred")  
+
+precis(mod3b_samps_df)
+
+```  
+
+*$APD_{yx}$ is virtually identical to $a_i$ above.*  
+
+### (f)  
+Now estimate the APD derivative using the Bayesian bootstrap. Report the posterior mean and 95% credible intervals of the APD. Are the results too different from the previous results?  
+
+```{r}
+n_iter = 1e3
+apds <- coda.samples(mod3b,
+                     n.iter = n_iter,
+                     variable.names = "apd_i")[[1]]
+
+Pz <- gtools::rdirichlet(n_iter, alpha = rep(1, ncol(apds))) 
+apds %*% t(Pz) |> mean()
+```  
+*As we can see, the result using the Bayesian bootstrap is basically the same as we got above when modeling APD in Jags*  
+
+
+
+
+
+
+
+# Problem 3  
+
+Consider the three models given by the DAGs of Figure 1. The data for each model can be found on canvas.  
+
+![](pset5_p3_dags.png)  
+For each model, your goal is to estimate the average treatment effect (ATE) of D on Y , namely:
+$$
+ATE = E[Y(1)] - E[Y(0)]
+$$  
+
+
+Here you will estimate the ATE using regression adjustment, with the appropriate set of control variables.  
+For this exercise, you should:  
+(i) model the conditional distribution of Y using a Gaussian likelihood, using a fully interacted model for the conditional mean (you can assume constant variance; use fairly flat priors for all parameters);  
+(ii) model the distribution of the appropriate set of covariates X using the Bayesian bootstrap.  
+
+```{r, include=FALSE}
+d1 <- readr::read_csv("model1.csv") %>% .[sample(1:nrow(.), 5e3), ]
+d2 <- readr::read_csv("model2.csv") %>% .[sample(1:nrow(.), 5e3), ]
+d3 <- readr::read_csv("model3.csv") %>% .[sample(1:nrow(.), 5e3), ]
+```  
+
+```{r}
+linear_model_code_a <- "
+  data{
+    D <- dim(x)
+    n <- D[1]
+    p <- D[2]
+  }
+  model{
+    
+   for(i in 1:n){
+      # likelihood
+      y[i] ~ dnorm(mu[i], tau)
+      
+      # posterior predictive
+      ynew[i] ~ dnorm(mu[i], tau)
+      
+      # ATE
+      ate[i] <- beta[2] + beta[4] * x[i,4]
+   }
+    
+    # conditional mean using matrix algebra
+    mu <- x %*% beta
+    #ate <- beta[2] + beta[4] * x[,2] * x[,4]
+    
+    for(j in 1:p){
+      beta[j] ~ dnorm(mb[j], pow(sb[j], -2))
+    }
+    sigma ~ dexp(lambda)
+    tau <- pow(sigma, -2)
+  }
+" 
+
+linear_model_code_b <- "
+  data{
+    D <- dim(x)
+    n <- D[1]
+    p <- D[2]
+  }
+  model{
+    
+   for(i in 1:n){
+      # likelihood
+      y[i] ~ dnorm(mu[i], tau)
+      
+      # posterior predictive
+      ynew[i] ~ dnorm(mu[i], tau)
+      
+      # ATE
+      ate[i] <- beta[2] + beta[5] * x[i,3] + beta[6] * x[i,4]
+   }
+    
+    # conditional mean using matrix algebra
+    mu <- x %*% beta
+
+    for(j in 1:p){
+      beta[j] ~ dnorm(mb[j], pow(sb[j], -2))
+    }
+    sigma ~ dexp(lambda)
+    tau <- pow(sigma, -2)
+  }
+"
+
+linear_model_code_c <- "
+  data{
+    D <- dim(x)
+    n <- D[1]
+    p <- D[2]
+  }
+  model{
+    
+   for(i in 1:n){
+      # likelihood
+      y[i] ~ dnorm(mu[i], tau)
+      
+      # posterior predictive
+      ynew[i] ~ dnorm(mu[i], tau)
+      
+      # ATE
+      ate[i] <-  beta[2] 
+   }
+    
+    # conditional mean using matrix algebra
+    mu <- x %*% beta
+
+    for(j in 1:p){
+      beta[j] ~ dnorm(mb[j], pow(sb[j], -2))
+    }
+    sigma ~ dexp(lambda)
+    tau <- pow(sigma, -2)
+  }
+"
+
+```
+
+### (a)  
+
+*Because X1 acts as a confounder, we must control for it. Furthermore, X2, is a mediator, hence we don't have to control for it. This is confirmed by* <code>dagitty</code>.  
+```{r p3_1}
+dag1 <- dagitty("dag {
+                  D -> Y
+                  D <- X1 -> Y
+                  D -> X2 -> Y
+                }")
+adjustmentSets(dag1, exposure = "D", outcome = "Y")
+```  
+
+$$
+Y_i|X_i,\beta,\sigma \sim \mathcal{N}(\mu_i,\sigma) \\
+\mu_i = \beta_1 + \beta_2D_i + \beta_3X_{1i} + \beta_4D_i\times X_{1i}
+$$
+
+```{r p3_1_mod}
+d1 <- d1 |> dplyr::mutate(d_x1 = d * x1)
+x <- cbind(1, d1$d, d1$x1, d1$d_x1)
+
+m3.1 <- jags.model(file = textConnection(linear_model_code_a), 
+                   data = list(x = x,
+                               y = d1$y, 
+                               mb = rep(0, 4), 
+                               sb = rep(1, 4),
+                               lambda = 1),
+                   quiet = TRUE)
+n_rep <- 1e3
+m3.1samps <- coda.samples(m3.1,
+                          n.iter = n_rep,
+                          variable.names = c("beta","sigma")) 
+
+m3.1samps_df <- as.data.frame(m3.1samps[[1]])
+precis(m3.1samps_df, prob = 0.95, depth = 2)
+```  
+
+```{r}
+my_post_plot <- function(model, n_rep, y) {
+  ynew <- coda.samples(model,
+                       n.iter = n_rep,
+                       variable.names = c("ynew"))[[1]] |> t() |> as.data.frame() 
+  plot(density(y), lwd = 3, ylim = c(0, 0.4), main = "posterior plot")
+  for(i in 1:1e2) {
+    lines(density(ynew[,i]), col = col.alpha("dodgerblue1", 0.15))
+  }
+  
+}
+```  
+
+```{r}
+my_post_plot(m3.1, 200, d1$y)
+```
+
+
+
+$$
+ATE_i = \\
+E(Y|D=1,X=x_i) - E(Y|D=0,X=x_i) = \\
+(\beta_1 + \beta_2D_i + \beta_3X_{1i} + \beta_4D\times X_{1i}) - (\beta_1 + \beta_3X_{1i}) = \\
+\beta_2D_i + \beta_4 D_i \times X_{1i} 
+$$
+
+```{r p3_1_bootstrap}
+## Bayesian Bootstrap
+get_ATE_bayes_bootstrap <- function(n_iter, model, ate_name) {
+    
+    # get matrix of draws from posterior with ATE where each column is a different x value in data
+    ATEs <- coda.samples(model, n.iter = n_iter, variable.names = ate_name)[[1]]
+    
+    # create a dirichlet rv with n_iter rows that add up to 1
+    Pz <- gtools::rdirichlet(n_iter, rep(1, ncol(ATEs)))
+    
+    # compute bayesian bootstrap mean
+    ATEs %*% t(Pz) |> mean()
+}
+```  
+
+```{r}
+## Bayesian Bootstrap
+get_ATE_bayes_bootstrap(n_iter = 500, m3.1, ate_name = "ate")
+```
+
+
+
+
+
+
+### (b)  
+Compute the posterior distribution of the ATE for Model 2 (use the data in model2.csv). Plot the posterior, and report the posterior mean and 95% credible interval.  
+
+*X1 is a confounder (it causes both D and Y) and we must control for it. Same goes for X2.*  
+
+```{r p3_2}
+dag2 <- dagitty("dag {
+                  D -> Y
+                  D <- X1 -> Y
+                  D <- X2 -> Y
+                }")
+adjustmentSets(dag2, exposure = "D", outcome = "Y")
+```  
+
+$$
+Y_i|X_i,\beta,\sigma \sim \mathcal{N}(\mu_i,\sigma) \\
+\mu_i = \beta_1 + \beta_2D_i + \beta_3X_{1i} + \beta_4X_{2i} + \beta_5D_i\times X_{1i} + \beta_6D_i\times X_{2i} + \beta_6X_{1i}\times X_{2i}
+$$
+
+```{r p3_2_mod}
+d2 <- d2 |> dplyr::mutate(d_x1 = d * x1,
+                          d_x2 = d * x2,
+                          x1_x2 = x1 * x2)
+x <- cbind(1, d2$d, d2$x1, d2$x2, d2$d_x1, d2$d_x2, d2$x1_x2)
+
+m3.2 <- jags.model(file = textConnection(linear_model_code_b), 
+                   data = list(x = x,
+                               y = d2$y, 
+                               mb = rep(0, 7), 
+                               sb = rep(1, 7),
+                               lambda = 1),
+                  quiet = TRUE)
+
+m3.2samps <- coda.samples(m3.2,
+                          n.iter = n_rep,
+                          variable.names = c("beta","sigma"))
+```
+```{r p3_2_precis}
+m3.2samps_df <- as.data.frame(m3.2samps[[1]])
+precis(m3.2samps_df, prob = 0.95, depth = 2)
+```  
+```{r}
+my_post_plot(m3.2, 200, d2$y)
+
+```
+
+
+$$
+ATE_i = \\
+E(Y|D=1,X=x_i) - E(Y|D=0,X=x_i) = \\
+(\beta_1 + \beta_2D_i + \beta_3X_{1i} + \beta_4X_{2i} + \beta_5D_i\times X_{1i} + \beta_6D_i\times X_{2i} + \beta_6X_{1i}\times X_{2i}) - (\beta_1 + \beta_3X_{1i} + \beta_4X_{2i} + \beta_6X_{1i}\times X_{2i}) = \\
+\beta_2D_i + \beta_5D_i\times X_{1i} + \beta_6D_i\times X_{2i}
+$$
+
+
+
+```{r}
+## Bayesian Bootstrap
+get_ATE_bayes_bootstrap(n_iter = 500, m3.2, ate_name = "ate")
+```  
+
+
+
+
+
+
+
+### (c)  
+Compute the posterior distribution of the ATE for Model 3 (use the data in model3.csv). Plot the posterior, and report the posterior mean and 95% credible interval.  
+*Here, X2 and X2 are colliders, and as such, we should not control for them otherwise we'd be opening a confounding door*  
+
+```{r p3_3}
+dag3 <- dagitty("dag {
+                  D -> Y
+                  D -> X2 <- Y
+                  D -> X1 <- Y
+                }")
+adjustmentSets(dag3, exposure = "D", outcome = "Y")
+```  
+
+$$
+Y_i|X_i,\beta,\sigma \sim \mathcal{N}(\mu_i,\sigma) \\
+\mu_i = \beta_1 + \beta_2D_i
+$$  
+
+```{r}
+m3.3 <- jags.model(file = textConnection(linear_model_code_c), 
+                   data = list(x = cbind(1, d3$d),
+                               y = d3$y, 
+                               mb = rep(0, 2), 
+                               sb = rep(1, 2),
+                               lambda = 1),
+                  quiet = TRUE)
+
+m3.3samps <- coda.samples(m3.3,
+                          n.iter = n_rep,
+                          variable.names = c("beta","sigma"))
+
+m3.3samps_df <- as.data.frame(m3.3samps[[1]])
+precis(m3.3samps_df, prob = 0.95, depth = 2)
+```  
+
+```{r}
+my_post_plot(m3.3, 200, d3$y)
+```
+
+
+```{r}
+## Bayesian Bootstrap
+get_ATE_bayes_bootstrap(n_iter = 5e2, m3.3, ate_name = "ate")
+
+```  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+

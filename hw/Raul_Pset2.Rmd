@@ -1,0 +1,362 @@
+---
+title: "Homework 2"
+author: "Raul Torres Aragon"
+date: "4/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+
+```
+
+# Problem 1  
+
+Using the data we sampled live during Lecture 2, namely (W W W W L W W W L), reproduce the posterior predictive check of the number of switches found in page 67, Figure 3.7 (the second figure).  
+
+```{r Prob1}
+
+# Y_i = 1 "Water", 0 "Land"
+data <- c(1,1,1,1,0,1,1,1,0)
+
+# set up grid of potential Pw values
+n_grid <- 1e2
+pw_grid <- seq(from=0 , to=1 , length.out=n_grid)
+
+# compute likelihood of x water in n tosses
+likelihood <- dbinom(x=sum(data), size=length(data), prob=pw_grid)
+
+# prior uniform(0,1) = 1/(1-0) = 1
+prior <- rep(1,n_grid) 
+
+# posterior
+posterior <-  prior * likelihood / sum(prior * likelihood)
+
+# sample the posterior
+nsim <- 1e5
+samples <- sample(pw_grid, size = nsim, replace = TRUE, prob = posterior)
+
+# generate 10,000 binomial draws of Binom(n=9, p=samples)
+w <- rbinom(nsim, size = 9, prob = samples)
+#barplot(table(w), main = "distribution of count of W \n based on posterior samples", xlab = "count of W")
+
+# compute switches
+# [we observed three switches in nine tosses; let's see what our simulated W sees]
+observed_switches <- rle(data)$values |> length()-1
+
+## simulate nsim sequences of 9 draws
+wi_post <- rbinom(nsim*9, size = 1, prob = rep(samples, 9))
+dim(wi_post) <- c(nsim, 9) #<-splt into matrix with 9 columns
+switches_post <- apply(wi_post, 1, function(x) rle(x)$values |> length()-1)
+barplot(table(switches_post)/nsim,
+        xlab = "Switches", ylab = "Prob",
+        col = ifelse(0:9 == observed_switches, "blue", "gray"))
+
+
+```
+
+# 4E1 to 4E5  
+
+4E1. In the definition below, which line is the likelihood?  
+
+$$
+y_i\mid \mu, \sigma \sim Normal(\mu, \sigma) \\
+\mu \sim Normal(0, 10) \\
+\sigma \sim Exponential(1)
+$$ 
+*The first line is the likelihood*  
+
+**4E2.** How many parameters are in the posterior distribution?  
+
+$P(\mu,\sigma\mid y_i)$ so there are two parameters, $\mu$ and $\sigma$.  
+
+**4E3.** Write down the appropriate form of Bayes' theorem that includes the proper likelihood and priors.  
+
+likelihood $P(y_i \mid \mu, \sigma)$  
+priors $P(\mu)P(\sigma)$  
+posterior: $P(\mu, \sigma \mid y_i)$  
+
+Bayes: $P(B\mid A) = \frac{P(A \mid B)P(B)}{\int P(A \mid B)P(B)dB}$  
+
+$$ 
+P(\mu, \sigma \mid y_i) = \frac{P(y_i \mid \mu, \sigma) P(\mu)P(\sigma)}{\int \int  P(y_i \mid \mu, \sigma) P(\mu)P(\sigma) d\mu d\sigma}
+$$  
+
+**4E4.** In the model definition below, which line is the linear model?  
+
+$$
+y_i \sim Normal(\mu, \sigma)  \\
+\mu_i = \alpha + \beta x_i \\
+\alpha \sim Normal(0,10) \\
+\beta \sim Normal(0,1) \\
+\sigma \sim Exp(2)
+$$  
+*the second line is the linear model $\mu_i = \alpha + \beta x_i$*  
+
+**4E5.** How many parameters are in the posterior distribution?  
+*Posterior is $P(\alpha, \beta, \sigma \mid y_i)$, so three.*  
+
+
+# 4M1
+```{r 4M1}
+nsim  <- 1e4
+mu    <- rnorm(nsim, mean = 0, sd = 10)
+sigma <- rexp(nsim, rate = 1)
+ysim  <- rnorm(nsim, mean = mu, sd = sigma)
+summary(ysim)
+```
+```{r}
+hist(ysim)
+```
+
+# 4M7  
+Refit model m4.3 without xbar. Compare posteriors, in particular covariance among the parameters. Then compare predictions.  
+
+*comparing posteriors...*  
+```{r 4M7}
+data(Howell1)
+d <- Howell1
+d2 <- d[d$age >= 18, ]
+xbar <- mean(d2$weight)
+m4.3 <- quap(
+          alist(
+            height ~ dnorm(mu, sigma),
+            mu <- a + b*(weight - xbar),
+            a ~ dnorm(178, 20),
+            b ~ dlnorm(0,1),
+            sigma ~ dunif(0, 50)
+          ), data = d2
+        )
+
+precis(m4.3)
+```
+```{r}
+m4.m7 <- quap(
+           alist(
+             height ~ dnorm(mu, sigma),
+             mu <- a + b*weight,
+             a ~ dnorm(178, 20),
+             b ~ dlnorm(0,1),
+             sigma ~ dunif(0, 50)
+           ), data = d2
+         )
+precis(m4.m7)
+```  
+
+*comparing covariance among the parameters...*  
+```{r}
+print(round(vcov(m4.3),3))
+print(round(vcov(m4.m7),3))
+```
+
+*After mean-centering $x$, we see that the covariance among the posterior parameters is zero. Not so for the not mean-centered $x$ model.*  
+
+*Comparing predictions...*
+
+*Now to obtain prediction intervals I will (1) simulate some weights, (2) obtain mean mu from each model, (3) compute credible intervals, and (4) plot 1-3.*  
+```{r}
+# simulate weights
+weight_seq <- seq(from=25, to=70, by=1)
+
+# sample the posteriors to get conditional Mus i.e. (Mu|a,b,weight_seq)
+post_m4.3 <- extract.samples(m4.3)
+post_m4.m7 <- extract.samples(m4.m7)
+
+
+# use each weight I simulated, with every a and b from the sampled posterior sampled to get predicted Mus
+mu_m4.3 <- sapply(weight_seq, function(weight) post_m4.3$a + post_m4.3$b*(weight - xbar)) 
+mu_m4.m7 <- sapply(weight_seq, function(weight) post_m4.m7$a + post_m4.m7$b*(weight - xbar)) 
+
+# for a given simulated weight, we get a Mu for each (a,b) pair we sampled. 
+# Now take the mean of all Mus across all (a,b) pairs for each simulated weight. 
+# (We get length(weight_seq) mean Mus) 
+mu_m4.3_mean <- apply(mu_m4.3, 2, mean)
+mu_m4.m7_mean <- apply(mu_m4.m7, 2, mean)
+
+# simulate actual heights (not means of heights) and their PI
+sim_height4.3  <- sim(m4.3, data = list(weight = weight_seq))
+sim_height4.m7 <- sim(m4.m7, data = list(weight = weight_seq))
+height_PI_4.3  <- apply( sim_height4.3, 2, PI, prob = 0.95)
+height_PI_4.m7 <- apply( sim_height4.m7, 2, PI, prob = 0.95)
+```
+```{r}
+plot( height ~ weight, data = d2, col = "gray")
+lines(weight_seq, mu_m4.3_mean, lty = 3, lwd=2)
+lines(weight_seq, mu_m4.m7_mean, col = "red", lty = 1, lwd=5)
+shade(height_PI_4.3, weight_seq)
+shade(height_PI_4.m7, weight_seq, col = col.alpha("orange",0.15))
+```  
+
+*As we can see, the two models are equivalent in terms of predicting. They both have the same information and hence reach the same conclusions. The only difference is that one has a mean-centered x and the other one doesn't, but they are equivalent.* 
+
+
+
+# 4H1  
+The weights listed below were recorded in the !Kung census, but heights were not recorded for these individuals. Provide predicted heights and 89% intervals for each of these individuals. That is, fill in the table below, using model-based predictions.  
+```{r 4H1}
+# 4H1
+nsim <- 1e4
+weights <- c(46.95, 43.72, 64.78, 32.59, 54.63)
+
+# first fit a Bayesian linear model
+data(Howell1)
+d <- Howell1
+d2 <- d[d$age >= 18, ]
+xbar <- mean(d2$weight)
+lmod <- quap(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- a + b*(weight),
+    a ~ dnorm(0,20),
+    b ~ dnorm(0,10),
+    sigma ~ dunif(0, 50)
+  ), data = d2
+)
+
+# sample from the posterior
+samp_post <- extract.samples(lmod, n = nsim)
+```
+
+```{r}
+# approach A) 
+# for each weight w_i, compute a+b*w_i using every (a,b) pair in the sampled posterior
+# [every row is an (a,b) pair and every column is a weight value]
+mus <- sapply(weights, function(weight) samp_post$a + samp_post$b*(weight)) 
+# take the mean of each predicted Mu for each column (i.e. for each weight)
+mu_hat <- apply(mus, 2, mean)
+tab_a <- apply(mus, 2, HPDI, prob=0.89) |> t() |> as.data.frame()
+tab_a[['mu_hat']] <- mu_hat
+tab_a[['weights']] <- weights
+print(round(tab_a[, c("weights","mu_hat","|0.89","0.89|")],1))
+```
+
+```{r}
+# approach B) 
+# [incorporating sigma]
+# for each weight w_i, simulate an rnorm() with Mu = a+b[w_i], Sd = sigma, 
+# where a,b,sigma are each of the triplets in the sampled posterior
+ys <- sapply(weights, function(weight) rnorm(nsim, samp_post$a + samp_post$b*weight, samp_post$sigma))
+# average each obtained rnorm() across w_i
+y_hat <- apply(ys, 2, mean)
+tab_b <- apply(ys, 2, HPDI, prob=0.89) |> t() |> as.data.frame()
+tab_b[['y_hat']] <- y_hat
+tab_b[['weights']] <- weights
+print(round(tab_b[, c("weights","y_hat","|0.89","0.89|")],1))
+
+```  
+
+# 4H2  
+Select out all the rows in the Howell1 data with ages below 18 years of age.  
+If you do it right, you should end up with a new data frame with 192 rows in it.  
+
+```{r}
+d3 <- d[d$age < 18, ]
+stopifnot(nrow(d3) == 192)
+```
+
+
+## (a)  
+Fit a linear regression to these data, using quap. Present and interpret the estimates. For every 10 units of increase in weight, how much taller does the model predict a child gets?  
+
+```{r 4h2a}
+lmod_child <- quap(
+                alist(
+                  height ~ dnorm(mu, sigma),
+                  mu <- a + b*(weight),
+                  a ~ dnorm(0,10),
+                  b ~ dnorm(0,20),
+                  sigma ~ dunif(0, 75)
+                ), data = d3
+              )
+
+precis(lmod_child)
+```  
+*Based on this model, a 10-unit increase in weight is associated with an increase of about 28 units (cm) of height.*
+
+## (b)  
+Plot the raw data, with height on the vertical axis and weight on the horizontal axis. Superimpose the MAP regression line and 89% interval for the mean. Also superimpose the 89% interval for predicted heights.  
+```{r}
+
+# first, sample from the posterior
+post_samp <- extract.samples(lmod_child)
+weight_seq <- seq(from=1, to=max(d3$weight), by=1)
+
+# predict mean heights
+mus <- sapply(weight_seq,
+              function(weight) post_samp$a + post_samp$b*weight)
+mu_hat <- apply(mus, 2, mean)
+mu_ci  <- apply(mus, 2, HPDI, prob = 0.89) #|> t() |> as.data.frame()
+yhats  <- sapply(weight_seq,
+                function(weight) rnorm(1e3, post_samp$a + post_samp$b*weight, post_samp$sigma))
+yhat_ci<- apply(yhats, 2, HPDI, prob=0.89)
+
+```
+```{r}
+plot(height ~ weight, data = d3)
+lines(weight_seq, mu_hat)
+shade(mu_ci, weight_seq, col = col.alpha("orange",0.15))
+shade(yhat_ci, weight_seq, col = col.alpha("blue",0.15))
+
+```
+
+
+## (c)  
+What aspects of the model fit concern you? Describe the kinds of assumptions you would change, if any, to improve the model. You don’t have to write any new code. Just explain what the model appears to be doing a bad job of, and what you hypothesize would be a better model.  
+
+*It seems like the relationship is not linear but it might be exponential. In other words, the predictions are good in the middle, but they're bad around the edges (<10, >30)*  
+*To improve the model I would add weight squared or some other exponential version of weight*  
+
+# 4H3  
+Suppose a colleague of yours, who works on allometry, glances at the practice problems just above. Your colleague exclaims, “That’s silly. Everyone knows that it’s only the logarithm of body weight that scales with height!” Let’s take your colleague’s advice and see what happens.  
+
+## (a)  
+Model the relationship between height (cm) and the natural logarithm of weight (log-kg). Use the entire Howell1 data frame, all 544 rows, adults and non-adults. Can you interpret the resulting estimates?  
+
+```{r}
+d4 <- d |> dplyr::mutate(log_weight = log(weight))
+logmod <- quap(
+              alist(
+                height ~ dnorm(mu, sigma),
+                mu <- a + b*(log_weight),
+                a ~ dnorm(0,10),
+                b ~ dnorm(0,20),
+                sigma ~ dunif(0, 75)
+              ), data = d4
+          )
+precis(logmod)
+
+```  
+*interpretation of log model is a bit trickier. That is the downside of non-linear models: interpretation is virtually impossible or non-intuitive. Having said that, I believe that sometimes one can interpret log transformations almost as percentages. So in this example, a one percent change in weight is associated with an increase of about 47cm in height*
+
+
+
+
+## (b)  
+Begin with this plot: plot( height ~ weight , data=Howell1 ). Then use samples from the quadratic approximate posterior of the model in (a) to superimpose on the plot: (1) the predicted mean height as a function of weight, (2) the 97% interval for the mean, and (3) the 97% interval for predicted heights.  
+
+```{r}
+post_samp <- extract.samples(logmod)
+
+weight_seq <- seq(from=1, to=max(d4$weight), by=1)
+
+mus <- sapply(weight_seq,
+              function(weight) post_samp$a + post_samp$b*log(weight))
+mu_hat <- apply(mus, 2, mean)
+mu_ci  <- apply(mus, 2, HPDI, prob = 0.89) 
+yhats  <- sapply(weight_seq,
+                function(weight) rnorm(1e3, post_samp$a + post_samp$b*log(weight), post_samp$sigma))
+yhat_ci<- apply(yhats, 2, HPDI, prob=0.89)
+
+```
+```{r}
+plot(height ~ weight , data=Howell1)
+lines(weight_seq, mu_hat)
+shade(mu_ci, weight_seq, col = col.alpha("orange",0.15))
+shade(yhat_ci, weight_seq, col = col.alpha("blue",0.15))
+```
+
+*This model looks like a much better fit. Most of the observed values fall within the predicted intervals.*
+
+
+

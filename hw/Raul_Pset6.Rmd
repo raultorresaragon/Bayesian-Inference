@@ -1,0 +1,274 @@
+---
+title: "Homework 6"
+author: "Raul Torres Aragon"
+date: "5/25/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+library(rjags)
+library(rstan)
+library(dplyr)
+library(dagitty)
+
+data <- readr::read_csv("qog_jan16.csv")
+
+```  
+
+
+## Access to clean water continued (Beta regression)  
+
+In this exercise, we will continue our analysis of the relationship between access to clean water and infant mortality, as we have done in Problem Set 5. We will use the Quality of Governance dataset (qog jan16.csv) from January 2016 [Teorell etal., 2016, Aronow and Miller, 2019]. Please refer to Problem Set 5 for the description of the dataset. In Problem Set 5, Question 2.2, we fitted a quadratic model of the form:  
+
+$$
+Y_i|X_i,\beta,\sigma \sim N(\mu_i,\sigma) \\
+\mu_i = \beta_0 + \beta_1 X_i + \beta_2X_i^2
+$$  
+
+We saw that, even though this model was better than the linear model in fitting the data, the results of the posterior predictive checks were still not satisfactory. One reason for that was the fact that, for instance, we cannot have $Y_i$ below zero. In this question we will try to explore a different likelihood function for the conditional distribution of $Y_i|X_i$.
+One distribution that allows us to model a quantity between zero and one is the beta distribution. Here let’s first divide infant mortality by 1,000, that is, define $Y_i^* := Y_i/1000$. Now consider a beta likelihood, as specified below:  
+
+$$
+Y_i^*|X_i,\beta,\phi \sim \text{Beta}(a_i, b_i) \\
+\text{logit}(\mu_i) = \beta_0 + \beta_1X_i \\
+a_i = \mu_i \times \phi \\
+b_i = (1-\mu_i) \times \phi
+$$  
+
+
+Where $\mu_i$ is the conditional mean and $\phi$ the conditional "precision" of $Y_i$.  
+
+With this in mind, do the following:  
+
+# 1.  
+Fit the model above using either JAGS or Stan, with the following specification: (i) run 4 Markov chains; (ii) if using (JAGS/Stan), run a (burn-in/warmup) period of 1,000 iterations; and, (iii) run 3,000 iterations (for each chain). You can use a Normal(0,1) prior for the $\beta_0$ and $\beta_1$, and a Uniform(0, 500) prior for $\phi$.  
+
+```{r c11}
+Y <- data$wdi_mortinftot/1000
+X <- data$epi_watsup - mean(data$epi_watsup)
+Z <- data$wdi_accelectr - mean(data$wdi_accelectr)
+
+model_code <- "
+  model{
+    
+    for(i in 1:n) {
+        # likelihood
+        Y[i] ~ dbeta(a[i], b[i])
+    
+        # linear model
+        logit(mu[i]) <- b0 + b1*X[i]
+        a[i] <- mu[i] * phi
+        b[i] <- (1-mu[i]) * phi
+    
+        # posterior predictive
+        ynew[i] ~ dbeta(a[i], b[i])
+    }
+    
+    # priors
+    b0 ~ dnorm(0,1)
+    b1 ~ dnorm(0,1)
+    phi ~ dunif(0, 500)
+  }
+"
+```  
+
+```{r}
+# number of iterations
+nsim <- 3e3
+m1 <- jags.model(file = textConnection(model_code),
+                 data = list(Y=Y, X=X, n=nrow(data)),
+                 n.chains = 4, 
+                 n.adapt  = 1e3)
+update(m1, nsim)
+```  
+
+```{r}
+coda_samples <- coda.samples(model = m1, 
+                             variable.names = c("b0", "b1","phi"), 
+                             n.iter = nsim)
+```  
+
+
+# 2.  
+After extracting the posterior samples, run some diagnostic checks of your Markov Chain: (i) check the traceplot; (ii) check the effective sample size; (iii) check the Gelman-Rubin diagnostic (Rhat). Interpret the results—do you see any indication of problems?  
+
+```{r}
+# trace plot
+par(mar=c(1,1,1,1))
+plot(coda_samples)
+```  
+  
+*The plot for both b0 and b1 show the multiple chains for each parameter reaching the posterior region and converging to the same value quickly*  
+
+```{r}
+# Rhat
+gelman.diag(coda_samples)
+```  
+*The $\hat{R}$ or Gelman-Rubin diagnostic is 1, which is less than 1.1, hence the MCMC seems to be convergent.*  
+
+```{r}
+# effective sample size
+effectiveSize(coda_samples)
+```  
+*The effective sample size is comparable to the number of iterations, which means the effective number of samples from the posterior is almost the same as the number of iterations in the MCMC.*
+
+# 3.  
+Report the posterior means and the 95% credible intervals of $\beta_0$, $\beta_1$ and $\phi$. Compare the results of your model with the results of the betareg function of the betareg package in R. In this model, can we interpret the impact of a change in $X_i$ on our predictions of $Y_i$ by simply reading one regression coefficient? Why, or why not?  
+
+```{r}
+samps_df <- as.data.frame(coda_samples[[1]])
+rethinking::precis(samps_df, prob = 0.95, digits = 3)
+```
+```{r}
+betareg::betareg(Y~X) |> coef()
+```  
+*As you can see results are pretty much the same.*  
+*No, we cannot simply read the coefficient of one regression as the impact change in $X_i$ because the link function we use makes the relationship between Y and the X non-linear. Instead, what we want to do is think of the target quantity we're after (risk difference, or risk ratio for example) and compute that directly. If, for instance, we want the $\frac{\partial E(Y|X)}{\partial X}$ then we can compute it here and see that it is a function of $X_i$ and not just a coefficient (as in the 1-link function case).*  
+
+
+# 4.  
+Plot the scatter plot of mortality versus access to clean water, and include in the plot: (i) the posterior mean of the regression line (i.e, $\mu_i$ as defined above); (ii) the 95% credible interval for the regression line; and (iii) the 95% prediction interval.  
+
+```{r}
+### obtain E(Y|X) and credible interval
+post <- samps_df
+water_seq <- seq(-60, 60, length.out = 200)
+
+mu_fun <- function(x) inv_logit(post$b0 + post$b1*(x))
+mu <- sapply(water_seq, mu_fun)
+mu_mean <- apply(mu, 2, mean)
+mu_ci <- apply(mu, 2, PI, prob = 0.95)
+```  
+
+```{r}
+### obtain predicted interval
+ysim_fun <- function(x) {
+                mu <- inv_logit(post$b0 + post$b1*x)
+                rbeta(n = nrow(post),
+                      shape1 = mu * post$phi,
+                      shape2 = (1-mu) * post$phi
+                      )
+}
+ysim <- sapply(water_seq, ysim_fun)
+ysim_pi <- apply(ysim, 2, PI, prob = 0.95)
+```
+
+
+
+```{r}
+data$Y <- Y
+data$X <- X
+
+# plot raw data
+plot(Y~X, data=data, 
+     ylab = "infant mortality", 
+     xlab = "pct pop with access to clean water",
+     main = "Access to clean water and Infant Mortality \n(deaths per 1,000 before 1 year of age)")
+
+# plot MAP line
+lines(water_seq, mu_mean, lwd=2)
+
+# shaded region for credible interval
+shade(mu_ci, water_seq, col = col.alpha("lightsalmon", 0.55))
+
+# shaded region for predictive interval
+shade(ysim_pi, water_seq, col = col.alpha("lightskyblue1", 0.35))
+
+```
+
+
+# 5.  
+Perform a posterior predictive check overlaying the density of the observed data against the density of 200 simulated datasets. Does the Beta model seem to fit the data better than the Gaussian model you used in Problem Set 5? In which parts?  
+
+```{r}
+plot(density(data$Y), lwd = 3, ylim = c(0, 26), xlim = c(-0.05,0.17))
+for(i in 1:200) {
+  y_new <- sapply(data$X, function(x) {
+                            mu <- inv_logit(post$b0[1:200] + post$b1[1:200]*x)
+                            rbeta(1, 
+                                  shape1 = mu * post$phi[1:200],
+                                  shape2 = (1-mu) * post$phi[1:200]
+                            )
+                          })
+  lines(density(y_new), col = col.alpha("dodgerblue1", 0.10))
+}
+```
+
+
+# 6.
+As before, define the average partial derivative of $X_i$ on $Y_i$ as, 
+
+$$
+\text{APD}_{yx} = \text{E}\Bigl[\frac{\partial E(Y_i|X_i)}{\partial(X_i)} \Bigr]
+$$  
+
+In this model, the analytical form of the APD is a bit more complicated to derive. Thus, let us use a numerical approach. Recall the derivative can be defined as:  
+
+$$
+\frac{\partial E(Y_i|X_i)}{\partial(X_i)}_{X_i=x_i} = lim_{h \rightarrow 0} \frac{E(Y_i|X_i + h) - E(Y_i|X_i=x_i - h)}{2h}  
+$$  
+
+This formula suggests an alternative way to approximate the derivative numerically, by computing the above difference with a small enough h. Use h = 0.001 and compute the the derivative for each observed value of $X_i = x_i$ as defined above. Use Bayesian bootstrapping to perform the averaging over $X$, and compute the APD. Report the posterior mean and 95% credible intervals of the APD. Is the result using the Beta model very different from the previous models you used in Problem Set 5? (note that, since we divided the outcome by 1000, we need to multiply the computed APD by 1,000 to compare with previous results)  
+
+```{r}
+h <- 0.001
+EygX <- function(x) {
+            mu <- inv_logit(post$b0[1:500] + post$b1[1:500]*x)
+            #beta_draw <- rbeta(length(mu), 
+            #                   shape1 = mu * mean(post$phi[1:200]),
+            #                   shape2 = (1-mu) * mean(post$phi[1:200])
+            #             )
+            #beta_draw
+            mu
+}
+
+APD <- function(x, h = 0.001) {
+           (EygX(x+h) - EygX(x-h))/(2*h)
+}
+
+```  
+
+
+```{r}
+APDs <- sapply(data$X, APD, h = h)
+
+Pz <- gtools::rdirichlet(1e3, rep(1, ncol(APDs)))
+
+APDs %*% t(Pz) |> t() |> colMeans() |> mean() 
+
+APDs_df <- APDs %*% t(Pz) |> t() |> colMeans() |> tibble() |> `names<-`("APDs") |> mutate(APDs = 1000*APDs) 
+APDs_df |> precis(prob = 0.95, digits = 3)
+
+```  
+*After multiplying by, we see that the APD is very close to the one in Pset5, which was -0.60.*
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
